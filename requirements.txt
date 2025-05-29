@@ -1,0 +1,28 @@
+# Web framework
+fastapi>=0.100.0
+uvicorn>=0.23.0
+pydantic>=2.0.0
+pydantic[email]>=2.0.0
+python-multipart>=0.0.6
+
+# Database
+sqlalchemy>=2.0.0
+alembic>=1.11.0
+python-dotenv>=1.0.0
+
+# Authentication and security
+passlib[bcrypt]>=1.7.4
+python-jose[cryptography]>=3.3.0
+
+# AWS S3 integration
+boto3>=1.28.0
+
+# Utilities
+python-slugify>=8.0.1
+email-validator>=2.0.0
+
+# For testing
+pytest>=7.4.0
+httpx>=0.24.1
+
+psycopg2-binary
