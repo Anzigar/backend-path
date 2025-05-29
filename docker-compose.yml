@@ -48,7 +48,7 @@ services:
   database:
     image: postgres:latest
     container_name: database
-    restart: on-failure:5
+    restart: always
     networks:
       - proxy
     env_file:
@@ -68,31 +68,6 @@ services:
       timeout: 5s
       retries: 5
       start_period: 10s
-
-  api:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: pathway-api
-    restart: unless-stopped
-    ports:
-      - "8000:8000"
-    depends_on:
-      database:
-        condition: service_healthy
-    environment:
-      - DOCKER_ENV=true
-      - DB_TYPE=postgres
-      - DB_HOST=database
-      - DB_PORT=5432
-      - DB_USER=${POSTGRES_USER}
-      - DB_PASSWORD=${POSTGRES_PASSWORD}
-      - DB_NAME=${POSTGRES_DB}
-    volumes:
-      - .:/app
-    networks:
-      - proxy
-    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 
 volumes:
   postgres_data:
