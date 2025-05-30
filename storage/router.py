@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, File, UploadFile, Form, HTTPException, status, Query
+from fastapi import APIRouter, Depends, File, UploadFile, Form, HTTPException, status, Query, Request
 from sqlalchemy.orm import Session
 from typing import List, Optional
 import boto3
@@ -42,16 +42,20 @@ async def upload_file(
     file: UploadFile = File(...),
     file_type: schema.FileType = Form(schema.FileType.OTHER),
     related_entity_id: Optional[int] = Form(None),
+    request: Request = None,
     db: Session = Depends(get_db)
 ):
     """Upload a file to S3 and store its metadata in the database"""
-    if not file.content_type.startswith('image/'):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Only image files are allowed"
-        )
-    
     try:
+        # Check if the file exists and has content
+        if not file or file.filename is None:
+            raise HTTPException(status_code=400, detail="No file provided or invalid file")
+        
+        # Get file content safely
+        contents = await file.read()
+        if not contents:
+            raise HTTPException(status_code=400, detail="File content is empty")
+        
         # Generate unique filename
         unique_filename = get_unique_filename(file.filename)
         
@@ -60,11 +64,10 @@ async def upload_file(
         file_path = f"{folder}/{unique_filename}"
         
         # Upload to S3
-        content = await file.read()
         s3_client.put_object(
             Bucket=S3_BUCKET,
             Key=file_path,
-            Body=content,
+            Body=contents,
             ContentType=file.content_type,
         )
         
@@ -78,7 +81,7 @@ async def upload_file(
             file_path=file_path,
             file_type=file_type,
             content_type=file.content_type,
-            size_bytes=len(content),
+            size_bytes=len(contents),
             bucket_name=S3_BUCKET,
             public_url=public_url,
             related_entity_id=related_entity_id
