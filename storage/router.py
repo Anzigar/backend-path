@@ -2,16 +2,21 @@ from fastapi import APIRouter, Depends, File, UploadFile, Form, HTTPException, s
 from sqlalchemy.orm import Session
 from typing import List, Optional
 import boto3
-from botocore.exceptions import ClientError
+from botocore.exceptions import ClientError, NoCredentialsError
 import os
 import uuid
 import logging
+import traceback
 from database import get_db
 from . import model, schema
 from dotenv import load_dotenv
 
 # Load environment variables
 load_dotenv()
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 router = APIRouter(
     prefix="/storage",
@@ -22,18 +27,32 @@ router = APIRouter(
 AWS_ACCESS_KEY = os.getenv("AWS_ACCESS_KEY_ID")
 AWS_SECRET_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
 S3_BUCKET = os.getenv("S3_BUCKET_NAME")
-S3_REGION = os.getenv("AWS_REGION", "us-east-1")
+S3_REGION = os.getenv("AWS_REGION", "us-east-2")
 
-# Initialize S3 client
-s3_client = boto3.client(
-    's3',
-    aws_access_key_id=AWS_ACCESS_KEY,
-    aws_secret_access_key=AWS_SECRET_KEY,
-    region_name=S3_REGION
-)
+# Check required configuration
+if not all([AWS_ACCESS_KEY, AWS_SECRET_KEY, S3_BUCKET]):
+    logger.warning("Missing AWS credentials or S3 bucket name. File uploads will fail!")
+
+# Initialize S3 client with error handling
+try:
+    s3_client = boto3.client(
+        's3',
+        aws_access_key_id=AWS_ACCESS_KEY,
+        aws_secret_access_key=AWS_SECRET_KEY,
+        region_name=S3_REGION
+    )
+    # Test connection
+    if AWS_ACCESS_KEY and AWS_SECRET_KEY and S3_BUCKET:
+        s3_client.head_bucket(Bucket=S3_BUCKET)
+        logger.info(f"Successfully connected to S3 bucket: {S3_BUCKET}")
+except (ClientError, NoCredentialsError) as e:
+    logger.error(f"Failed to initialize S3 client: {str(e)}")
+    s3_client = None
 
 def get_unique_filename(original_filename):
     """Generate a unique filename to avoid overwriting files in S3"""
+    if original_filename is None:
+        original_filename = "unnamed_file"
     ext = os.path.splitext(original_filename)[1]
     return f"{uuid.uuid4().hex}{ext}"
 
@@ -47,13 +66,33 @@ async def upload_file(
 ):
     """Upload a file to S3 and store its metadata in the database"""
     try:
+        # Validate S3 configuration
+        if s3_client is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Storage service is not properly configured"
+            )
+
         # Check if the file exists and has content
-        if not file or file.filename is None:
-            raise HTTPException(status_code=400, detail="No file provided or invalid file")
+        if not file:
+            logger.error("No file provided")
+            raise HTTPException(status_code=400, detail="No file provided")
+        
+        if file.filename is None:
+            file.filename = "unnamed_file"
+            logger.warning("File has no filename, using default")
+            
+        logger.info(f"Processing upload for file: {file.filename}")
         
         # Get file content safely
-        contents = await file.read()
+        try:
+            contents = await file.read()
+        except Exception as e:
+            logger.error(f"Error reading file contents: {str(e)}")
+            raise HTTPException(status_code=400, detail=f"Error reading file: {str(e)}")
+        
         if not contents:
+            logger.error("File content is empty")
             raise HTTPException(status_code=400, detail="File content is empty")
         
         # Generate unique filename
@@ -63,13 +102,22 @@ async def upload_file(
         folder = file_type.value
         file_path = f"{folder}/{unique_filename}"
         
+        logger.info(f"Uploading to S3 path: {file_path}")
+        
         # Upload to S3
-        s3_client.put_object(
-            Bucket=S3_BUCKET,
-            Key=file_path,
-            Body=contents,
-            ContentType=file.content_type,
-        )
+        try:
+            s3_client.put_object(
+                Bucket=S3_BUCKET,
+                Key=file_path,
+                Body=contents,
+                ContentType=file.content_type or "application/octet-stream",
+            )
+        except ClientError as e:
+            logger.error(f"S3 upload error: {str(e)}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to upload to storage: {str(e)}"
+            )
         
         # Generate public URL
         public_url = f"https://{S3_BUCKET}.s3.{S3_REGION}.amazonaws.com/{file_path}"
@@ -80,7 +128,7 @@ async def upload_file(
             original_filename=file.filename,
             file_path=file_path,
             file_type=file_type,
-            content_type=file.content_type,
+            content_type=file.content_type or "application/octet-stream",
             size_bytes=len(contents),
             bucket_name=S3_BUCKET,
             public_url=public_url,
@@ -90,20 +138,30 @@ async def upload_file(
         db.add(db_file)
         db.commit()
         db.refresh(db_file)
+        logger.info(f"File upload successful: {unique_filename}")
         return db_file
         
+    except HTTPException as e:
+        # Re-raise HTTP exceptions as they're already properly formatted
+        raise
     except ClientError as e:
-        logging.error(f"AWS S3 error: {e}")
+        logger.error(f"AWS S3 error: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to upload file to S3: {str(e)}"
         )
     except Exception as e:
-        logging.error(f"Unexpected error: {e}")
+        logger.error(f"Unexpected error in upload_file: {str(e)}\n{traceback.format_exc()}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Unexpected error occurred: {str(e)}"
         )
+    finally:
+        # Reset the file cursor position for potential reuse
+        try:
+            await file.seek(0)
+        except:
+            pass
 
 @router.get("/files", response_model=schema.FileList)
 def get_files(
