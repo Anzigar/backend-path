@@ -17,7 +17,7 @@ class BlogCategoryResponse(BlogCategoryBase):
     id: int
     
     class Config:
-        orm_mode = True
+        from_attributes = True  # Updated from orm_mode=True
 
 # Blog schemas
 class BlogBase(BaseModel):
@@ -79,14 +79,14 @@ class BlogResponse(BlogBase):
     tags: List[TagResponse] = []
     
     class Config:
-        orm_mode = True
+        from_attributes = True  # Updated from orm_mode=True
 
 class BlogDetailResponse(BlogResponse):
     comments: List[CommentResponse] = []
     related_blogs: List[BlogResponse] = []
     
     class Config:
-        orm_mode = True
+        from_attributes = True  # Updated from orm_mode=True
 
 # Newsletter subscription schemas
 class SubscriptionCreate(BaseModel):
@@ -102,7 +102,7 @@ class SubscriptionResponse(BaseModel):
     subscribed_at: datetime
     
     class Config:
-        orm_mode = True
+        from_attributes = True  # Updated from orm_mode=True
 
 # Blog comment schema (extends existing comment schema)
 class BlogCommentCreate(BaseModel):
@@ -130,4 +130,4 @@ class BlogListResponse(BaseModel):
     total: int
     
     class Config:
-        orm_mode = True
+        from_attributes = True  # Updated from orm_mode=True

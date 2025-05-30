@@ -27,7 +27,7 @@ class FileUploadResponse(BaseModel):
     compression_info: Optional[CompressionInfo] = None
     
     class Config:
-        orm_mode = True
+        from_attributes = True  # Updated from orm_mode=True
 
 class FileList(BaseModel):
     files: List[FileUploadResponse]
