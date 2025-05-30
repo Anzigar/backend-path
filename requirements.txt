@@ -24,5 +24,6 @@ email-validator>=2.0.0
 # For testing
 pytest>=7.4.0
 httpx>=0.24.1
+pillow
 
 psycopg2-binary

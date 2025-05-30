@@ -114,11 +114,11 @@ class BlogCommentCreate(BaseModel):
 
 # Query parameters
 class BlogPaginationParams(BaseModel):
-    skip: int = 0
+    page: int = 1
     limit: int = 10
     search: Optional[str] = None
     category_id: Optional[int] = None
-    tag_ids: Optional[List[int]] = Field(default_factory=list)
+    tag_ids: List[int] = Field(default_factory=list)
     author_id: Optional[int] = None
     start_date: Optional[date] = None
     end_date: Optional[date] = None
