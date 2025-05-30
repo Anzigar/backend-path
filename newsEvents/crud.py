@@ -1,6 +1,7 @@
 from sqlalchemy.orm import Session
 from . import model, schema
 import uuid
+from fastapi import HTTPException
 
 def update_category(db: Session, category_id: int, category_update: schema.CategoryCreate) -> model.Category:
     """Update a category"""
@@ -21,6 +22,19 @@ def create_event(db: Session, event: schema.EventCreate) -> model.Event:
     if not event.slug:
         event.slug = f"{'-'.join(event.title.lower().split()[:5])}-{uuid.uuid4().hex[:8]}"
         
+    # Validate featured_image_id exists in stored_files if provided
+    if event.featured_image_id:
+        # Import StoredFile model here to avoid circular imports
+        from storage.model import StoredFile
+        
+        # Check if featured_image_id exists
+        image_exists = db.query(StoredFile).filter(StoredFile.id == event.featured_image_id).first() is not None
+        if not image_exists:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Featured image with ID {event.featured_image_id} not found in stored files"
+            )
+    
     db_event = model.Event(
         title=event.title,
         slug=event.slug,

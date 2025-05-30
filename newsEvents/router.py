@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Query, Body, Path
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError
 from typing import List, Optional
 from database import get_db
 from . import schema, model, crud
@@ -303,11 +304,30 @@ def delete_news(news_id: int, db: Session = Depends(get_db)):
 # Event endpoints
 @event_router.post("/", response_model=schema.EventResponse)
 def create_event(
-    event: schema.EventCreate = Body(...),  # Make sure this is not List[schema.EventCreate]
+    event: schema.EventCreate = Body(...),
     db: Session = Depends(get_db)
 ):
     """Create a new event"""
-    return crud.create_event(db, event)
+    try:
+        return crud.create_event(db, event)
+    except HTTPException as e:
+        # Re-raise HTTP exceptions with their original status code and detail
+        raise
+    except IntegrityError as e:
+        # Handle database integrity errors (like foreign key violations)
+        db.rollback()
+        detail = str(e.orig)
+        if "violates foreign key constraint" in detail:
+            if "featured_image_id" in detail:
+                raise HTTPException(
+                    status_code=400, 
+                    detail="The specified featured image ID does not exist"
+                )
+        # Generic database error fallback
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
 
 @event_router.get("/", response_model=List[schema.EventResponse])
 def read_events(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
