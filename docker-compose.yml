@@ -17,6 +17,8 @@ services:
       - "traefik.docker.network=proxy"
       - "traefik.http.routers.traefik.service=traefik"
       - "traefik.http.routers.traefik.service=api@internal"
+    command:
+       - "--configFile=/etc/traefik/traefik.yml"
 
   foundation-api:
     build:
