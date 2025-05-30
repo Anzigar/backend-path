@@ -2,8 +2,10 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
+from fastapi.staticfiles import StaticFiles
 import uvicorn
 import logging
+import os
 from config import API_PREFIX, DEBUG
 from database import create_tables
 
@@ -40,6 +42,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Setup local file serving if local storage is used
+LOCAL_STORAGE_PATH = os.getenv("LOCAL_STORAGE_PATH", "local_uploads")
+if os.path.exists(LOCAL_STORAGE_PATH):
+    app.mount("/local-files", StaticFiles(directory=LOCAL_STORAGE_PATH), name="local-files")
 
 # Add global exception handler
 @app.exception_handler(Exception)

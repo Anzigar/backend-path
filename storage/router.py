@@ -23,38 +23,73 @@ router = APIRouter(
     tags=["storage"]
 )
 
-# Configure AWS
+# Configure AWS with fallback to local storage
 AWS_ACCESS_KEY = os.getenv("AWS_ACCESS_KEY_ID")
 AWS_SECRET_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
 S3_BUCKET = os.getenv("S3_BUCKET_NAME")
 S3_REGION = os.getenv("AWS_REGION", "us-east-2")
+USE_LOCAL_STORAGE = os.getenv("USE_LOCAL_STORAGE", "false").lower() == "true"
+LOCAL_STORAGE_PATH = os.getenv("LOCAL_STORAGE_PATH", "local_uploads")
+
+# Ensure local storage directory exists
+if USE_LOCAL_STORAGE or not all([AWS_ACCESS_KEY, AWS_SECRET_KEY, S3_BUCKET]):
+    os.makedirs(LOCAL_STORAGE_PATH, exist_ok=True)
+    logger.info(f"Local storage configured at: {LOCAL_STORAGE_PATH}")
 
 # Check required configuration
-if not all([AWS_ACCESS_KEY, AWS_SECRET_KEY, S3_BUCKET]):
-    logger.warning("Missing AWS credentials or S3 bucket name. File uploads will fail!")
+if not all([AWS_ACCESS_KEY, AWS_SECRET_KEY, S3_BUCKET]) and not USE_LOCAL_STORAGE:
+    logger.warning("Missing AWS credentials or S3 bucket name. Using local storage as fallback.")
+    USE_LOCAL_STORAGE = True
 
 # Initialize S3 client with error handling
-try:
-    s3_client = boto3.client(
-        's3',
-        aws_access_key_id=AWS_ACCESS_KEY,
-        aws_secret_access_key=AWS_SECRET_KEY,
-        region_name=S3_REGION
-    )
-    # Test connection
-    if AWS_ACCESS_KEY and AWS_SECRET_KEY and S3_BUCKET:
-        s3_client.head_bucket(Bucket=S3_BUCKET)
-        logger.info(f"Successfully connected to S3 bucket: {S3_BUCKET}")
-except (ClientError, NoCredentialsError) as e:
-    logger.error(f"Failed to initialize S3 client: {str(e)}")
-    s3_client = None
+s3_client = None
+if not USE_LOCAL_STORAGE:
+    try:
+        s3_client = boto3.client(
+            's3',
+            aws_access_key_id=AWS_ACCESS_KEY,
+            aws_secret_access_key=AWS_SECRET_KEY,
+            region_name=S3_REGION
+        )
+        # Validate S3 bucket exists and is accessible
+        if S3_BUCKET:
+            s3_client.head_bucket(Bucket=S3_BUCKET)
+            logger.info(f"Successfully connected to S3 bucket: {S3_BUCKET}")
+        else:
+            logger.error("S3 bucket name is not configured")
+            s3_client = None
+            USE_LOCAL_STORAGE = True
+    except (ClientError, NoCredentialsError) as e:
+        logger.error(f"Failed to initialize S3 client: {str(e)}")
+        s3_client = None
+        USE_LOCAL_STORAGE = True
 
+# Rest of helpers and functions
 def get_unique_filename(original_filename):
     """Generate a unique filename to avoid overwriting files in S3"""
     if original_filename is None:
         original_filename = "unnamed_file"
     ext = os.path.splitext(original_filename)[1]
     return f"{uuid.uuid4().hex}{ext}"
+
+def save_to_local_storage(contents, file_path, content_type):
+    """Save file to local storage instead of S3"""
+    try:
+        full_path = os.path.join(LOCAL_STORAGE_PATH, file_path)
+        # Create directories if needed
+        os.makedirs(os.path.dirname(full_path), exist_ok=True)
+        
+        with open(full_path, "wb") as f:
+            f.write(contents)
+            
+        # Generate a local URL
+        base_url = os.getenv("BASE_URL", "http://localhost:8000")
+        public_url = f"{base_url}/local-files/{file_path}"
+        
+        return full_path, public_url
+    except Exception as e:
+        logger.error(f"Error saving to local storage: {str(e)}")
+        raise
 
 @router.post("/upload", response_model=schema.FileUploadResponse)
 async def upload_file(
@@ -64,15 +99,8 @@ async def upload_file(
     request: Request = None,
     db: Session = Depends(get_db)
 ):
-    """Upload a file to S3 and store its metadata in the database"""
+    """Upload a file to S3 or local storage and store its metadata in the database"""
     try:
-        # Validate S3 configuration
-        if s3_client is None:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Storage service is not properly configured"
-            )
-
         # Check if the file exists and has content
         if not file:
             logger.error("No file provided")
@@ -102,35 +130,51 @@ async def upload_file(
         folder = file_type.value
         file_path = f"{folder}/{unique_filename}"
         
-        logger.info(f"Uploading to S3 path: {file_path}")
+        # Set content type with fallback
+        content_type = file.content_type or "application/octet-stream"
         
-        # Upload to S3
-        try:
-            s3_client.put_object(
-                Bucket=S3_BUCKET,
-                Key=file_path,
-                Body=contents,
-                ContentType=file.content_type or "application/octet-stream",
-            )
-        except ClientError as e:
-            logger.error(f"S3 upload error: {str(e)}")
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to upload to storage: {str(e)}"
-            )
+        # Determine storage method (S3 or local)
+        using_s3 = s3_client is not None and not USE_LOCAL_STORAGE and S3_BUCKET
         
-        # Generate public URL
-        public_url = f"https://{S3_BUCKET}.s3.{S3_REGION}.amazonaws.com/{file_path}"
+        if using_s3:
+            logger.info(f"Uploading to S3 path: {file_path}")
+            
+            # Upload to S3
+            try:
+                if S3_BUCKET is None:
+                    raise ValueError("S3 bucket name is None. Check your environment variables.")
+                    
+                s3_client.put_object(
+                    Bucket=S3_BUCKET,
+                    Key=file_path,
+                    Body=contents,
+                    ContentType=content_type,
+                )
+                # Generate public URL
+                public_url = f"https://{S3_BUCKET}.s3.{S3_REGION}.amazonaws.com/{file_path}"
+                storage_path = file_path
+                bucket_name = S3_BUCKET
+                
+            except (ClientError, ValueError) as e:
+                logger.error(f"S3 upload error: {str(e)}")
+                # Fall back to local storage
+                logger.info("Falling back to local storage")
+                storage_path, public_url = save_to_local_storage(contents, file_path, content_type)
+                bucket_name = "local_storage"
+        else:
+            logger.info(f"Using local storage: {file_path}")
+            storage_path, public_url = save_to_local_storage(contents, file_path, content_type)
+            bucket_name = "local_storage"
         
         # Store metadata in database
         db_file = model.StoredFile(
             filename=unique_filename,
             original_filename=file.filename,
-            file_path=file_path,
+            file_path=storage_path,
             file_type=file_type,
-            content_type=file.content_type or "application/octet-stream",
+            content_type=content_type,
             size_bytes=len(contents),
-            bucket_name=S3_BUCKET,
+            bucket_name=bucket_name,
             public_url=public_url,
             related_entity_id=related_entity_id
         )
@@ -144,12 +188,6 @@ async def upload_file(
     except HTTPException as e:
         # Re-raise HTTP exceptions as they're already properly formatted
         raise
-    except ClientError as e:
-        logger.error(f"AWS S3 error: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to upload file to S3: {str(e)}"
-        )
     except Exception as e:
         logger.error(f"Unexpected error in upload_file: {str(e)}\n{traceback.format_exc()}")
         raise HTTPException(
