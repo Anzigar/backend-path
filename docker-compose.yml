@@ -39,7 +39,7 @@ services:
     labels:
       - "traefik.enable=true"
       - "traefik.docker.network=proxy"
-      - "traefik.http.routers.foundation-api.rule=Host(`foundation-api.example.com`)"
+      - "traefik.http.routers.foundation-api.rule=Host(`backend.pathwaysfoundationforthepoor.org`)"
       - "traefik.http.routers.foundation-api.entrypoints=websecure"
       - "traefik.http.routers.foundation-api.tls=true"
       - "traefik.http.routers.foundation-api.tls.certresolver=letsencrypt"
