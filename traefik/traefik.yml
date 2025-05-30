@@ -1,0 +1,19 @@
+# Basic traefik.yml example
+entryPoints:
+  web:
+    address: ":80"
+  websecure:
+    address: ":443"
+
+providers:
+  docker:
+    exposedByDefault: false
+    network: proxy
+
+certificatesResolvers:
+  letsencrypt:
+    acme:
+      email: ansigare@gmail.com
+      storage: acme.json
+      httpChallenge:
+        entryPoint: web
