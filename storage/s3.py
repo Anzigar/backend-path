@@ -18,6 +18,9 @@ class S3Storage:
     
     def __init__(self):
         """Initialize S3 client using environment variables."""
+        # Log environment variable status
+        logger.info("Checking S3 storage configuration...")
+        
         self.aws_access_key = os.getenv("AWS_ACCESS_KEY_ID")
         self.aws_secret_key = os.getenv("AWS_SECRET_ACCESS_KEY")
         self.region_name = os.getenv("AWS_REGION", "us-east-2")
@@ -25,12 +28,29 @@ class S3Storage:
         self.use_local_storage = os.getenv("USE_LOCAL_STORAGE", "false").lower() == "true"
         self.local_storage_path = os.getenv("LOCAL_STORAGE_PATH", "local_uploads")
         
+        # Log environment variable presence (not values for security)
+        logger.info(f"AWS_ACCESS_KEY_ID: {'Set' if self.aws_access_key else 'Not set'}")
+        logger.info(f"AWS_SECRET_ACCESS_KEY: {'Set' if self.aws_secret_key else 'Not set'}")
+        logger.info(f"AWS_REGION: {self.region_name}")
+        logger.info(f"S3_BUCKET_NAME: {self.bucket_name or 'Not set'}")
+        logger.info(f"USE_LOCAL_STORAGE: {self.use_local_storage}")
+        logger.info(f"LOCAL_STORAGE_PATH: {self.local_storage_path}")
+        
         # Ensure local storage directory exists
         if self.use_local_storage or not all([self.aws_access_key, self.aws_secret_key, self.bucket_name]):
             os.makedirs(self.local_storage_path, exist_ok=True)
             logger.info(f"Local storage configured at: {self.local_storage_path}")
             self.use_local_storage = True
+            
+            # Log missing environment variables
+            if not self.aws_access_key:
+                logger.warning("AWS_ACCESS_KEY_ID is missing")
+            if not self.aws_secret_key:
+                logger.warning("AWS_SECRET_ACCESS_KEY is missing")
+            if not self.bucket_name:
+                logger.warning("S3_BUCKET_NAME is missing")
         
+        logger.info(f"Storage mode: {'Local Storage' if self.use_local_storage else 'AWS S3'}")
         self.s3_client = None if self.use_local_storage else self._get_s3_client()
         
     def _get_s3_client(self):
