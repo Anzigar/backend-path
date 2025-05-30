@@ -1,11 +1,11 @@
-from fastapi import APIRouter, Depends, File, UploadFile, Form, HTTPException, status, Query, Request
+from fastapi import APIRouter, Depends, File, UploadFile, Form, HTTPException, status, Query, Request, Body
 from sqlalchemy.orm import Session
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 import logging
 import traceback
 from database import get_db
 from . import model, schema
-from .s3 import storage  # Import the S3Storage singleton
+from .s3 import storage, COMPRESS_IMAGES  # Import the S3Storage singleton and compression setting
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -21,23 +21,25 @@ async def upload_file(
     file: UploadFile = File(...),
     file_type: schema.FileType = Form(schema.FileType.OTHER),
     related_entity_id: Optional[int] = Form(None),
+    compress: Optional[bool] = Form(COMPRESS_IMAGES),  # Default from environment
     request: Request = None,
     db: Session = Depends(get_db)
 ):
-    """Upload a file directly to S3 and store its metadata in the database"""
+    """Upload a file to S3 with optional image compression"""
     try:
         # Check if the file exists
         if not file:
             logger.error("No file provided")
             raise HTTPException(status_code=400, detail="No file provided")
         
-        logger.info(f"Processing S3 upload for file: {file.filename or 'unnamed_file'}")
+        logger.info(f"Processing S3 upload for file: {file.filename or 'unnamed_file'} (compression: {compress})")
         
         # Use the S3Storage class to upload the file
         success, message, file_url, metadata = await storage.upload_file(
             file=file,
             folder=file_type.value,  # Use file type as folder name
-            custom_filename=None  # Let S3Storage generate a unique name
+            custom_filename=None,  # Let S3Storage generate a unique name
+            compress_image=compress  # Apply image compression if enabled
         )
         
         if not success:
@@ -57,11 +59,27 @@ async def upload_file(
             related_entity_id=related_entity_id
         )
         
+        # Add compression information if available
+        compression_info = {}
+        if "compressed" in metadata and metadata["compressed"]:
+            compression_info = {
+                "compressed": True,
+                "original_size": metadata.get("original_size"),
+                "compression_ratio": metadata.get("compression_ratio")
+            }
+            logger.info(f"Image compressed with ratio: {compression_info.get('compression_ratio')}")
+        
         db.add(db_file)
         db.commit()
         db.refresh(db_file)
+        
+        response_data = schema.FileUploadResponse.from_orm(db_file)
+        # Add compression info to response
+        if compression_info:
+            response_data.compression_info = compression_info
+        
         logger.info(f"File uploaded to S3 successful: {db_file.filename}")
-        return db_file
+        return response_data
         
     except HTTPException:
         # Re-raise HTTP exceptions as they're already properly formatted

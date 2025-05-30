@@ -3,15 +3,31 @@ import uuid
 from typing import Optional, BinaryIO, Dict, Any, Tuple, List
 import logging
 import boto3
+import io
 from botocore.exceptions import ClientError, NoCredentialsError
 from fastapi import HTTPException, UploadFile
 from dotenv import load_dotenv
+from PIL import Image  # Add Pillow for image compression
 
 # Load environment variables
 load_dotenv()
 
 # Configure logging
 logger = logging.getLogger(__name__)
+
+# Image compression settings
+DEFAULT_JPEG_QUALITY = int(os.getenv("JPEG_COMPRESSION_QUALITY", "85"))
+DEFAULT_PNG_COMPRESSION = int(os.getenv("PNG_COMPRESSION_LEVEL", "6"))
+MAX_IMAGE_DIMENSION = int(os.getenv("MAX_IMAGE_DIMENSION", "2000"))
+COMPRESS_IMAGES = os.getenv("COMPRESS_IMAGES", "true").lower() == "true"
+
+# Image content types
+IMAGE_CONTENT_TYPES = [
+    "image/jpeg", 
+    "image/jpg", 
+    "image/png", 
+    "image/webp"
+]
 
 class S3Storage:
     """S3 storage utility for managing file uploads to AWS S3."""
@@ -72,15 +88,17 @@ class S3Storage:
         self, 
         file: UploadFile, 
         folder: str = "uploads",
-        custom_filename: Optional[str] = None
+        custom_filename: Optional[str] = None,
+        compress_image: bool = COMPRESS_IMAGES
     ) -> Tuple[bool, str, Optional[str], Dict[str, Any]]:
         """
-        Upload a file to S3 bucket.
+        Upload a file to S3 bucket with optional image compression.
         
         Args:
             file: The file to upload
             folder: The folder within the bucket to store the file
             custom_filename: Optional custom filename, if not provided a UUID will be generated
+            compress_image: Whether to compress images before upload
             
         Returns:
             Tuple of (success status, message, url if successful, metadata)
@@ -105,10 +123,31 @@ class S3Storage:
             
             content_type = file.content_type or "application/octet-stream"
             
+            # Apply image compression if enabled and file is an image
+            original_size = len(file_content)
+            compressed = False
+            
+            if compress_image and content_type in IMAGE_CONTENT_TYPES:
+                try:
+                    logger.info(f"Compressing image: {file.filename}")
+                    file_content, content_type = self._compress_image(file_content, content_type, file_extension)
+                    compressed = True
+                    logger.info(f"Image compression: Original size: {original_size} bytes, "
+                                f"Compressed size: {len(file_content)} bytes, "
+                                f"Reduction: {(original_size - len(file_content)) / original_size * 100:.1f}%")
+                except Exception as e:
+                    logger.warning(f"Image compression failed: {str(e)}. Using original image.")
+            
             # Upload to S3
             success, message, file_url, metadata = self._upload_to_s3(
                 file_content, file_path, content_type, file.filename
             )
+            
+            # Add compression info to metadata
+            if compressed:
+                metadata["compressed"] = True
+                metadata["original_size"] = original_size
+                metadata["compression_ratio"] = f"{original_size / len(file_content):.2f}x"
             
             return success, message, file_url, metadata
                 
@@ -121,6 +160,53 @@ class S3Storage:
                 await file.seek(0)
             except:
                 pass
+    
+    def _compress_image(self, image_data: bytes, content_type: str, file_extension: str) -> Tuple[bytes, str]:
+        """Compress image data while preserving format."""
+        # Open the image using PIL
+        img = Image.open(io.BytesIO(image_data))
+        
+        # Resize if the image is too large
+        if max(img.size) > MAX_IMAGE_DIMENSION:
+            # Calculate new dimensions while preserving aspect ratio
+            ratio = min(MAX_IMAGE_DIMENSION / max(img.size[0], img.size[1]), 1.0)
+            new_size = (int(img.size[0] * ratio), int(img.size[1] * ratio))
+            img = img.resize(new_size, Image.LANCZOS)
+        
+        # Determine output format based on content type
+        if content_type in ["image/jpeg", "image/jpg"]:
+            output_format = "JPEG"
+            output_ext = ".jpg"
+            output_content_type = "image/jpeg"
+            quality = DEFAULT_JPEG_QUALITY
+            output_params = {"quality": quality, "optimize": True}
+        elif content_type == "image/png":
+            output_format = "PNG"
+            output_ext = ".png"
+            output_content_type = "image/png"
+            quality = DEFAULT_PNG_COMPRESSION
+            output_params = {"optimize": True, "compress_level": quality}
+        elif content_type == "image/webp":
+            output_format = "WEBP"
+            output_ext = ".webp"
+            output_content_type = "image/webp"
+            quality = DEFAULT_JPEG_QUALITY
+            output_params = {"quality": quality}
+        else:
+            # Not a supported format for compression, return original
+            return image_data, content_type
+        
+        # Create a BytesIO object to store the compressed image
+        output = io.BytesIO()
+        
+        # Save the image with compression
+        img.save(output, format=output_format, **output_params)
+        
+        # Get the compressed image data
+        output.seek(0)
+        compressed_data = output.getvalue()
+        
+        return compressed_data, output_content_type
 
     def _upload_to_s3(self, content, file_path, content_type, original_filename):
         """Upload file to S3 bucket."""

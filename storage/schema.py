@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field, HttpUrl, validator
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from datetime import datetime
 from enum import Enum
 
@@ -7,6 +7,11 @@ class FileType(str, Enum):
     BLOG_IMAGE = "blog_image"
     NEWS_IMAGE = "news_image"
     OTHER = "other"
+
+class CompressionInfo(BaseModel):
+    compressed: bool
+    original_size: Optional[int] = None
+    compression_ratio: Optional[str] = None
 
 class FileUploadResponse(BaseModel):
     id: int
@@ -19,6 +24,7 @@ class FileUploadResponse(BaseModel):
     bucket_name: str
     public_url: Optional[str]
     created_at: datetime
+    compression_info: Optional[CompressionInfo] = None
     
     class Config:
         orm_mode = True
