@@ -1,7 +1,6 @@
 from fastapi import APIRouter, Depends, File, UploadFile, Form, HTTPException, status, Query, Request
 from sqlalchemy.orm import Session
 from typing import List, Optional
-import os
 import logging
 import traceback
 from database import get_db
@@ -25,14 +24,14 @@ async def upload_file(
     request: Request = None,
     db: Session = Depends(get_db)
 ):
-    """Upload a file to S3 or local storage and store its metadata in the database"""
+    """Upload a file directly to S3 and store its metadata in the database"""
     try:
-        # Check if the file exists and has content
+        # Check if the file exists
         if not file:
             logger.error("No file provided")
             raise HTTPException(status_code=400, detail="No file provided")
         
-        logger.info(f"Processing upload for file: {file.filename or 'unnamed_file'}")
+        logger.info(f"Processing S3 upload for file: {file.filename or 'unnamed_file'}")
         
         # Use the S3Storage class to upload the file
         success, message, file_url, metadata = await storage.upload_file(
@@ -42,7 +41,7 @@ async def upload_file(
         )
         
         if not success:
-            logger.error(f"Upload failed: {message}")
+            logger.error(f"S3 upload failed: {message}")
             raise HTTPException(status_code=500, detail=message)
         
         # Store metadata in database
@@ -61,17 +60,24 @@ async def upload_file(
         db.add(db_file)
         db.commit()
         db.refresh(db_file)
-        logger.info(f"File upload successful: {db_file.filename}")
+        logger.info(f"File uploaded to S3 successful: {db_file.filename}")
         return db_file
         
     except HTTPException:
         # Re-raise HTTP exceptions as they're already properly formatted
         raise
+    except ValueError as e:
+        # Handle S3 configuration errors
+        logger.error(f"S3 configuration error: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"S3 storage not properly configured: {str(e)}"
+        )
     except Exception as e:
         logger.error(f"Unexpected error in upload_file: {str(e)}\n{traceback.format_exc()}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Unexpected error occurred: {str(e)}"
+            detail=f"S3 upload error: {str(e)}"
         )
 
 @router.get("/files", response_model=schema.FileList)
