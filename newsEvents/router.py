@@ -1,13 +1,8 @@
-from fastapi import APIRouter, Depends, HTTPException, Query, status, Form, Body
-from sqlalchemy.orm import Session, joinedload
+from fastapi import APIRouter, Depends, HTTPException, status, Query, Body, Path
+from sqlalchemy.orm import Session
 from typing import List, Optional
 from database import get_db
-from . import model, schema
-from storage.model import StoredFile
-import datetime
-from slugify import slugify
-from sqlalchemy import func, or_, desc
-from pydantic import HttpUrl  # Add this import
+from . import schema, model, crud
 
 # Create routers
 news_router = APIRouter(
@@ -306,74 +301,13 @@ def delete_news(news_id: int, db: Session = Depends(get_db)):
     return None
 
 # Event endpoints
-@event_router.post("/", response_model=schema.EventResponse, status_code=status.HTTP_201_CREATED)
-def create_event(event: schema.EventCreate, db: Session = Depends(get_db)):
-    # Check if slug already exists and handle it properly
-    if event.slug:
-        existing_event = db.query(model.Event).filter(model.Event.slug == event.slug).first()
-        if existing_event:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=f"Event with slug '{event.slug}' already exists. Please choose a different slug."
-            )
-    else:
-        # Generate slug if not provided
-        event.slug = generate_slug(event.title, db, model.Event)
-    
-    # Extract tags and related items for later processing - handle None values
-    tag_ids = event.tag_ids if event.tag_ids is not None else []
-    related_news_ids = event.related_news_ids if event.related_news_ids is not None else []
-    related_event_ids = event.related_event_ids if event.related_event_ids is not None else []
-    
-    # Remove relationship fields from the dict
-    event_data = event.dict(exclude={"tag_ids", "related_news_ids", "related_event_ids"})
-    
-    # Ensure registration_link is a string, not HttpUrl object
-    if isinstance(event_data.get("registration_link"), HttpUrl):
-        event_data["registration_link"] = str(event_data["registration_link"])
-    
-    # Validate category_id if provided
-    if event_data.get("category_id"):
-        category = db.query(model.Category).filter(model.Category.id == event_data["category_id"]).first()
-        if not category:
-            # If category doesn't exist, set to None to avoid FK constraint error
-            event_data["category_id"] = None
-    
-    # Validate featured_image_id if provided
-    if event_data.get("featured_image_id"):
-        from storage.model import StoredFile
-        stored_file = db.query(StoredFile).filter(StoredFile.id == event_data["featured_image_id"]).first()
-        if not stored_file:
-            # If file doesn't exist, set to None to avoid FK constraint error
-            event_data["featured_image_id"] = None
-    
-    # Create event
-    db_event = model.Event(**event_data)
-    db.add(db_event)
-    db.commit()
-    db.refresh(db_event)
-    
-    # Add tags - only if we have tag IDs and they're valid
-    if tag_ids:
-        tags = db.query(model.Tag).filter(model.Tag.id.in_(tag_ids)).all()
-        if tags:  # Only assign if we found valid tags
-            db_event.tags = tags
-    
-    # Add related news - only proceed if we have IDs and they exist
-    if related_news_ids:
-        related_news = db.query(model.News).filter(model.News.id.in_(related_news_ids)).all()
-        if related_news:  # Only assign if we found valid related news
-            db_event.related_news = related_news
-    
-    # Add related events - only proceed if we have IDs and they exist
-    if related_event_ids:
-        related_events = db.query(model.Event).filter(model.Event.id.in_(related_event_ids)).all()
-        if related_events:  # Only assign if we found valid related events
-            db_event.related_events = related_events
-    
-    db.commit()
-    db.refresh(db_event)
-    return db_event
+@event_router.post("/", response_model=schema.EventResponse)
+def create_event(
+    event: schema.EventCreate = Body(...),  # Make sure this is not List[schema.EventCreate]
+    db: Session = Depends(get_db)
+):
+    """Create a new event"""
+    return crud.create_event(db, event)
 
 @event_router.get("/", response_model=List[schema.EventResponse])
 def read_events(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):

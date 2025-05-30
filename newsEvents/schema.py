@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field, HttpUrl, EmailStr, validator
-from typing import List, Optional, Union, Dict, Any
+from typing import List, Optional, Dict, Any, Union
 from datetime import datetime, date
 from enum import Enum
 
@@ -141,51 +141,51 @@ class NewsDetailResponse(NewsResponse):
 # Event schemas
 class EventBase(BaseModel):
     title: str = Field(..., min_length=5, max_length=255)
-    summary: Optional[str] = Field(None, max_length=500)
+    summary: Optional[str] = None
     description: str
     organizer: Optional[str] = None
     venue: Optional[str] = None
     location_address: Optional[str] = None
     location_coordinates: Optional[str] = None
-    registration_link: Optional[HttpUrl] = None
+    registration_link: Optional[str] = None
     has_registration_form: bool = False
     ticket_price: Optional[float] = None
-    is_free: bool = True
+    is_free: bool = False
     contact_info: Optional[str] = None
 
 class EventCreate(EventBase):
     slug: Optional[str] = None
     start_date: datetime
-    end_date: Optional[datetime] = None
+    end_date: datetime
     category_id: Optional[int] = None
-    tag_ids: Optional[List[int]] = Field(default_factory=list)
     featured_image_id: Optional[int] = None
     is_published: bool = False
-    related_news_ids: Optional[List[int]] = Field(default_factory=list)
+    tag_ids: List[int] = Field(default_factory=list)
+    related_news_ids: Optional[List[int]] = Field(default_factory=list) 
     related_event_ids: Optional[List[int]] = Field(default_factory=list)
 
 class EventUpdate(BaseModel):
     title: Optional[str] = Field(None, min_length=5, max_length=255)
     slug: Optional[str] = None
-    summary: Optional[str] = Field(None, max_length=500)
+    summary: Optional[str] = None
     description: Optional[str] = None
-    organizer: Optional[str] = None
     start_date: Optional[datetime] = None
     end_date: Optional[datetime] = None
+    organizer: Optional[str] = None
+    category_id: Optional[int] = None
+    featured_image_id: Optional[int] = None
     venue: Optional[str] = None
     location_address: Optional[str] = None
     location_coordinates: Optional[str] = None
-    registration_link: Optional[HttpUrl] = None
+    registration_link: Optional[str] = None
     has_registration_form: Optional[bool] = None
     ticket_price: Optional[float] = None
     is_free: Optional[bool] = None
-    category_id: Optional[int] = None
-    featured_image_id: Optional[int] = None
-    is_published: Optional[bool] = None
     contact_info: Optional[str] = None
-    tag_ids: Optional[List[int]] = None
-    related_news_ids: Optional[List[int]] = None
-    related_event_ids: Optional[List[int]] = None
+    is_published: Optional[bool] = None
+    tag_ids: Optional[List[int]] = Field(default_factory=list)
+    related_news_ids: Optional[List[int]] = Field(default_factory=list)
+    related_event_ids: Optional[List[int]] = Field(default_factory=list)
 
 class EventResponse(EventBase):
     id: int
@@ -218,6 +218,16 @@ class ContentPaginationParams(BaseModel):
     search: Optional[str] = None
     category_id: Optional[int] = None
     tag_ids: Optional[List[int]] = Field(default_factory=list)
+    start_date: Optional[date] = None
+    end_date: Optional[date] = None
+    is_published: Optional[bool] = True
+
+class EventPaginationParams(BaseModel):
+    page: int = 1
+    limit: int = 10
+    search: Optional[str] = None
+    category_id: Optional[int] = None
+    tag_ids: List[int] = Field(default_factory=list)
     start_date: Optional[date] = None
     end_date: Optional[date] = None
     is_published: Optional[bool] = True
