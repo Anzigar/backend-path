@@ -2,6 +2,7 @@ from sqlalchemy.orm import Session
 from . import model, schema
 import uuid
 from fastapi import HTTPException
+from sqlalchemy import func
 
 def update_category(db: Session, category_id: int, category_update: schema.CategoryCreate) -> model.Category:
     """Update a category"""
@@ -30,9 +31,17 @@ def create_event(db: Session, event: schema.EventCreate) -> model.Event:
         # Check if featured_image_id exists
         image_exists = db.query(StoredFile).filter(StoredFile.id == event.featured_image_id).first() is not None
         if not image_exists:
+            # Get maximum ID to help with troubleshooting
+            max_id_result = db.query(func.max(StoredFile.id)).first()
+            max_id = max_id_result[0] if max_id_result and max_id_result[0] else 0
+            
             raise HTTPException(
                 status_code=400, 
-                detail=f"Featured image with ID {event.featured_image_id} not found in stored files"
+                detail=(
+                    f"Featured image with ID {event.featured_image_id} not found in stored files. "
+                    f"The highest available image ID is {max_id}. "
+                    "Please upload the image first or use an existing image ID."
+                )
             )
     
     db_event = model.Event(

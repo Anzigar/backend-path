@@ -164,3 +164,30 @@ def delete_file(file_id: int, db: Session = Depends(get_db)):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to delete file: {str(e)}"
         )
+
+@router.get("/files/available-images", response_model=schema.FileList)
+def get_available_images(
+    file_type: Optional[schema.FileType] = None,
+    skip: int = 0,
+    limit: int = 20,
+    db: Session = Depends(get_db)
+):
+    """Get list of available images that can be used as featured images"""
+    query = db.query(model.StoredFile)
+    
+    # Filter by image content types
+    query = query.filter(model.StoredFile.content_type.in_([
+        "image/jpeg", "image/jpg", "image/png", "image/webp", "image/gif"
+    ]))
+    
+    # Filter by file type if specified
+    if file_type:
+        query = query.filter(model.StoredFile.file_type == file_type)
+    
+    total_count = query.count()
+    files = query.order_by(model.StoredFile.id.desc()).offset(skip).limit(limit).all()
+    
+    return {
+        "files": files,
+        "count": total_count
+    }
