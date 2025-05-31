@@ -77,6 +77,29 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
         content={"detail": "Validation error", "errors": exc.errors()}
     )
 
+# Add a check to prevent API_PREFIX duplication in client requests
+@app.middleware("http")
+async def check_url_path(request: Request, call_next):
+    """Middleware to handle duplicate API prefixes in URLs"""
+    path = request.url.path
+    
+    # Check for duplicate API prefix (e.g., /api/api/...)
+    if path.startswith(f"{API_PREFIX}{API_PREFIX}"):
+        # Remove the duplicate prefix
+        corrected_path = path.replace(f"{API_PREFIX}{API_PREFIX}", API_PREFIX, 1)
+        logger.warning(f"Redirecting duplicate API prefix: {path} → {corrected_path}")
+        
+        # Create redirect response
+        redirect_url = str(request.url).replace(path, corrected_path)
+        response = JSONResponse(
+            status_code=status.HTTP_307_TEMPORARY_REDIRECT,
+            content={"detail": f"Redirecting to {corrected_path}"}
+        )
+        response.headers["Location"] = redirect_url
+        return response
+        
+    return await call_next(request)
+
 # Include all routers with appropriate prefixes
 # User and contact routes
 app.include_router(users_router, prefix=f"{API_PREFIX}")

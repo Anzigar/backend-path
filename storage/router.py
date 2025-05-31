@@ -211,3 +211,36 @@ def get_featured_images(
     images = query.order_by(model.StoredFile.id).offset(skip).limit(limit).all()
     
     return images
+
+# Add specialized upload endpoints for different content types
+@router.post("/uploads/{file_category}", response_model=schema.FileUploadResponse)
+async def upload_file_by_category(
+    file_category: str,
+    file: UploadFile = File(...),
+    related_entity_id: Optional[int] = Form(None),
+    compress: Optional[bool] = Form(COMPRESS_IMAGES),
+    request: Request = None,
+    db: Session = Depends(get_db)
+):
+    """Upload a file to a specific category folder"""
+    # Map URL path to FileType enum
+    file_type_mapping = {
+        "blog-image": schema.FileType.BLOG_IMAGE,
+        "news-image": schema.FileType.NEWS_IMAGE,
+        "other": schema.FileType.OTHER
+    }
+    
+    # Get the appropriate file type or default to OTHER
+    file_type = file_type_mapping.get(file_category, schema.FileType.OTHER)
+    
+    logger.info(f"Uploading file to category: {file_category} (type: {file_type})")
+    
+    # Reuse the existing upload_file function
+    return await upload_file(
+        file=file,
+        file_type=file_type,
+        related_entity_id=related_entity_id,
+        compress=compress,
+        request=request,
+        db=db
+    )
