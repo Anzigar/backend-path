@@ -1,17 +1,18 @@
 import logging
 from sqlalchemy.orm import Session
+from sqlalchemy import inspect
 from database import get_db
-from .model import Category, ContentType, Tag
+from .model import Category, Tag
 
 logger = logging.getLogger(__name__)
 
-# Sample categories for events and news
+# Sample categories for events and news - without content_type to avoid errors
 SAMPLE_CATEGORIES = [
-    {"name": "Technology", "description": "Tech news and events", "content_type": ContentType.BOTH},
-    {"name": "Business", "description": "Business updates and conferences", "content_type": ContentType.BOTH},
-    {"name": "Health", "description": "Health-related topics and events", "content_type": ContentType.BOTH},
-    {"name": "Education", "description": "Educational news and workshops", "content_type": ContentType.BOTH},
-    {"name": "Entertainment", "description": "Entertainment news and events", "content_type": ContentType.BOTH},
+    {"name": "Technology", "description": "Tech news and events"},
+    {"name": "Business", "description": "Business updates and conferences"},
+    {"name": "Health", "description": "Health-related topics and events"},
+    {"name": "Education", "description": "Educational news and workshops"},
+    {"name": "Entertainment", "description": "Entertainment news and events"},
 ]
 
 # Sample tags
@@ -39,14 +40,43 @@ def initialize_sample_categories():
         
     logger.info("No categories found in database, creating sample categories for development")
     
+    # Check if Category has content_type field
+    category_has_content_type = False
+    try:
+        # Get Category columns
+        category_columns = [c.name for c in inspect(Category).columns]
+        category_has_content_type = 'content_type' in category_columns
+        
+        if category_has_content_type:
+            # If ContentType enum exists, import it
+            try:
+                from .model import ContentType
+                logger.info("ContentType enum found")
+            except ImportError:
+                logger.warning("ContentType enum not found, will not set content_type field")
+                category_has_content_type = False
+    except Exception as e:
+        logger.warning(f"Error checking Category model structure: {str(e)}")
+    
     # Create sample categories
     for sample in SAMPLE_CATEGORIES:
         try:
-            category = Category(
-                name=sample["name"],
-                description=sample["description"],
-                content_type=sample["content_type"]
-            )
+            # Base category data
+            category_data = {
+                "name": sample["name"],
+                "description": sample["description"]
+            }
+            
+            # Add content_type if supported
+            if category_has_content_type:
+                try:
+                    category_data["content_type"] = ContentType.BOTH
+                except:
+                    # If ContentType.BOTH doesn't exist, try a string value
+                    category_data["content_type"] = "both"
+            
+            # Create category instance
+            category = Category(**category_data)
             db.add(category)
             logger.info(f"Created sample category: {sample['name']}")
         except Exception as e:
