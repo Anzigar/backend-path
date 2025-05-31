@@ -2,6 +2,7 @@ from pydantic import BaseModel, Field, HttpUrl, EmailStr, validator
 from typing import List, Optional, Dict, Any, Union
 from datetime import datetime, date
 from enum import Enum
+from storage.schema import FileUploadResponse
 
 # Shared schemas
 class ContentType(str, Enum):
@@ -124,11 +125,41 @@ class NewsResponse(NewsBase):
     created_at: datetime
     updated_at: Optional[datetime] = None
     category: Optional[CategoryResponse] = None
-    featured_image: Optional[Dict[str, Any]] = None
+    featured_image: Optional[FileUploadResponse] = None
     tags: List[TagResponse] = []
     
     class Config:
         orm_mode = True
+        from_attributes = True
+    
+    @validator('featured_image', pre=True)
+    def validate_featured_image(cls, v):
+        """Convert StoredFile object to dict if needed"""
+        if v is None:
+            return None
+        
+        # If already a dict or pydantic model, return as is
+        if isinstance(v, dict) or hasattr(v, 'dict'):
+            return v
+            
+        # If StoredFile instance, convert relevant fields
+        if hasattr(v, 'id') and hasattr(v, 'public_url'):
+            return {
+                "id": v.id,
+                "filename": getattr(v, 'filename', ''),
+                "file_path": getattr(v, 'file_path', ''),
+                "public_url": getattr(v, 'public_url', ''),
+                "content_type": getattr(v, 'content_type', ''),
+                "size_bytes": getattr(v, 'size_bytes', 0),
+                # Add other required fields with defaults
+                "original_filename": getattr(v, 'original_filename', ''),
+                "file_type": getattr(v, 'file_type', 'OTHER'),
+                "bucket_name": getattr(v, 'bucket_name', ''),
+                "created_at": getattr(v, 'created_at', datetime.now())
+            }
+            
+        # Otherwise, return None
+        return None
 
 class NewsDetailResponse(NewsResponse):
     comments: List[CommentResponse] = []
@@ -197,11 +228,41 @@ class EventResponse(EventBase):
     created_at: datetime
     updated_at: Optional[datetime] = None
     category: Optional[CategoryResponse] = None
-    featured_image: Optional[Dict[str, Any]] = None
+    featured_image: Optional[FileUploadResponse] = None
     tags: List[TagResponse] = []
     
     class Config:
         orm_mode = True
+        from_attributes = True
+    
+    @validator('featured_image', pre=True)
+    def validate_featured_image(cls, v):
+        """Convert StoredFile object to dict if needed"""
+        if v is None:
+            return None
+        
+        # If already a dict or pydantic model, return as is
+        if isinstance(v, dict) or hasattr(v, 'dict'):
+            return v
+            
+        # If StoredFile instance, convert relevant fields
+        if hasattr(v, 'id') and hasattr(v, 'public_url'):
+            return {
+                "id": v.id,
+                "filename": getattr(v, 'filename', ''),
+                "file_path": getattr(v, 'file_path', ''),
+                "public_url": getattr(v, 'public_url', ''),
+                "content_type": getattr(v, 'content_type', ''),
+                "size_bytes": getattr(v, 'size_bytes', 0),
+                # Add other required fields with defaults
+                "original_filename": getattr(v, 'original_filename', ''),
+                "file_type": getattr(v, 'file_type', 'OTHER'),
+                "bucket_name": getattr(v, 'bucket_name', ''),
+                "created_at": getattr(v, 'created_at', datetime.now())
+            }
+            
+        # Otherwise, return None
+        return None
 
 class EventDetailResponse(EventResponse):
     comments: List[CommentResponse] = []
@@ -246,3 +307,11 @@ class EventListResponse(BaseModel):
     
     class Config:
         orm_mode = True
+
+# Add this EventList class which is missing
+class EventList(BaseModel):
+    items: List[EventResponse]
+    total: int
+    
+    class Config:
+        from_attributes = True

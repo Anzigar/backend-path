@@ -1,407 +1,280 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Query, Body, Path
-from sqlalchemy.orm import Session
-from sqlalchemy.exc import IntegrityError
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Body
+from sqlalchemy.orm import Session, joinedload
+from sqlalchemy import func
 from typing import List, Optional
+import uuid
+import logging  # Add logging import
+import os  # Add import for accessing environment variables
 from database import get_db
-from . import schema, model, crud
+from . import schema, model
+from storage.model import StoredFile
 
-# Create routers
-news_router = APIRouter(
-    prefix="/news",
-    tags=["news"]
-)
+# Configure logger
+logger = logging.getLogger(__name__)  # Add logger definition
 
-event_router = APIRouter(
-    prefix="/events",
-    tags=["events"]
-)
+# Create router instances
+news_router = APIRouter(prefix="/news", tags=["news"])
+event_router = APIRouter(prefix="/events", tags=["events"])
+category_router = APIRouter(prefix="/categories", tags=["categories"])
+tag_router = APIRouter(prefix="/tags", tags=["tags"])
+comment_router = APIRouter(prefix="/comments", tags=["comments"])
 
-category_router = APIRouter(
-    prefix="/categories",
-    tags=["categories"]
-)
+# Helper functions (moved from crud.py)
+def get_category(db: Session, category_id: int) -> model.Category:
+    """Get a category by ID"""
+    category = db.query(model.Category).filter(model.Category.id == category_id).first()
+    if not category:
+        raise HTTPException(status_code=404, detail="Category not found")
+    return category
 
-tag_router = APIRouter(
-    prefix="/tags",
-    tags=["tags"]
-)
+def get_event(db: Session, event_id: int) -> model.Event:
+    """Get an event by ID"""
+    event = db.query(model.Event).options(
+        joinedload(model.Event.featured_image)  # Eager load the featured image
+    ).filter(model.Event.id == event_id).first()
+    if not event:
+        raise HTTPException(status_code=404, detail="Event not found")
+    return event
 
-comment_router = APIRouter(
-    prefix="/comments",
-    tags=["comments"]
-)
-
-# Helper functions
-def generate_slug(title, db, model_class, id=None):
-    base_slug = slugify(title)
-    slug = base_slug
-    counter = 1
+# Event routes
+@event_router.post("/", response_model=schema.EventResponse)
+def create_event(
+    event: schema.EventCreate,
+    db: Session = Depends(get_db)
+):
+    """Create a new event"""
+    # Generate slug if not provided
+    if not event.slug:
+        event.slug = f"{'-'.join(event.title.lower().split()[:5])}-{uuid.uuid4().hex[:8]}"
     
-    # Check if slug exists while excluding the current item if updating
-    query = db.query(model_class).filter(model_class.slug == slug)
-    if id:
-        query = query.filter(model_class.id != id)
+    # Handle category validation
+    if event.category_id:
+        category = db.query(model.Category).filter(model.Category.id == event.category_id).first()
+        if not category:
+            # Get available categories
+            available_categories = db.query(
+                model.Category.id,
+                model.Category.name
+            ).order_by(model.Category.id).all()
+            
+            # Format available categories list for error message
+            category_list = []
+            for cat in available_categories:
+                category_list.append(f"ID: {cat.id} - {cat.name}")
+            
+            # Option 1: Return helpful error with suggestion
+            # Find a suitable default category (first one or "Other" if exists)
+            default_category = db.query(model.Category).filter(
+                model.Category.name.ilike("other")
+            ).first() or db.query(model.Category).first()
+            
+            if default_category:
+                # Use default category and log warning
+                logger.warning(
+                    f"Invalid category ID {event.category_id} provided for event '{event.title}', "
+                    f"using default category '{default_category.name}' (ID: {default_category.id})"
+                )
+                event.category_id = default_category.id
+            else:
+                # No categories exist, so raise error
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Category with ID {event.category_id} not found in database. "
+                        "Please use an existing category ID.\n\n"
+                        "Available categories:\n" + "\n".join(category_list)
+                    )
+                )
     
-    while query.first() is not None:
-        slug = f"{base_slug}-{counter}"
-        query = db.query(model_class).filter(model_class.slug == slug)
-        if id:
-            query = query.filter(model_class.id != id)
-        counter += 1
+    # Validate featured_image_id exists in stored_files if provided
+    if event.featured_image_id:
+        # Check if featured_image_id exists
+        image = db.query(StoredFile).filter(StoredFile.id == event.featured_image_id).first()
+        if not image:
+            # Get list of available images to help the user
+            available_images = db.query(
+                StoredFile.id, 
+                StoredFile.filename, 
+                StoredFile.file_type
+            ).order_by(StoredFile.id).limit(10).all()
+            
+            # Format available images list
+            image_list = []
+            for img in available_images:
+                image_list.append(f"ID: {img.id} - {img.filename} ({img.file_type})")
+            
+            # Get the highest ID
+            max_id = db.query(func.max(StoredFile.id)).scalar() or 0
+            
+            # Check if we should use a default image instead (similar to category fallback)
+            use_default_fallback = os.getenv("USE_DEFAULT_IMAGE_FALLBACK", "false").lower() == "true"
+            if use_default_fallback and available_images:
+                # Find suitable default image - prefer type that matches folder name or first image
+                default_image = None
+                
+                # Try to find image of matching type first (e.g., NEWS_IMAGE for news content)
+                if folder_type := event.file_type if hasattr(event, 'file_type') else None:
+                    matching_images = [img for img in available_images if img.file_type.value == folder_type]
+                    if matching_images:
+                        default_image = matching_images[0]
+                
+                # If no matching type, use first available
+                if not default_image and available_images:
+                    default_image = available_images[0]
+                
+                if default_image:
+                    logger.warning(
+                        f"Invalid image ID {event.featured_image_id} provided for event '{event.title}', "
+                        f"using default image '{default_image.filename}' (ID: {default_image.id})"
+                    )
+                    event.featured_image_id = default_image.id
+                    # Continue with event creation
+                else:
+                    raise HTTPException(
+                        status_code=400, 
+                        detail=(
+                            f"Featured image with ID {event.featured_image_id} not found in stored files. "
+                            f"The highest available image ID is {max_id}. "
+                            "Please upload the image first or use an existing image ID.\n\n"
+                            "Available images (first 10):\n" + "\n".join(image_list)
+                        )
+                    )
+            else:
+                # No fallback, raise error as usual
+                raise HTTPException(
+                    status_code=400, 
+                    detail=(
+                        f"Featured image with ID {event.featured_image_id} not found in stored files. "
+                        f"The highest available image ID is {max_id}. "
+                        "Please upload the image first or use an existing image ID.\n\n"
+                        "Available images (first 10):\n" + "\n".join(image_list)
+                    )
+                )
     
-    return slug
+    db_event = model.Event(
+        title=event.title,
+        slug=event.slug,
+        summary=event.summary,
+        description=event.description,
+        start_date=event.start_date,
+        end_date=event.end_date,
+        organizer=event.organizer,
+        category_id=event.category_id,
+        venue=event.venue,
+        location_address=event.location_address,
+        location_coordinates=event.location_coordinates,
+        registration_link=event.registration_link,
+        has_registration_form=event.has_registration_form,
+        ticket_price=event.ticket_price,
+        is_free=event.is_free,
+        contact_info=event.contact_info,
+        is_published=event.is_published,
+        featured_image_id=event.featured_image_id
+    )
+    
+    db.add(db_event)
+    db.commit()
+    db.refresh(db_event)
+    
+    # Add tags if provided
+    if event.tag_ids:
+        for tag_id in event.tag_ids:
+            db_tag = db.query(model.Tag).filter(model.Tag.id == tag_id).first()
+            if db_tag:
+                db_event.tags.append(db_tag)
+        
+        db.commit()
+        db.refresh(db_event)
+    
+    # Add related news and events if provided
+    if event.related_news_ids:
+        for related_id in event.related_news_ids:
+            related_news = db.query(model.News).filter(model.News.id == related_id).first()
+            if related_news:
+                db_event.related_news.append(related_news)
+    
+    if event.related_event_ids:
+        for related_id in event.related_event_ids:
+            related_event = db.query(model.Event).filter(model.Event.id == related_id).first()
+            if related_event and related_event.id != db_event.id:
+                db_event.related_events.append(related_event)
+    
+    if event.related_news_ids or event.related_event_ids:
+        db.commit()
+        db.refresh(db_event)
+    
+    return db_event
 
-# Category endpoints
-@category_router.post("/", response_model=schema.CategoryResponse, status_code=status.HTTP_201_CREATED)
+@event_router.get("/{event_id}", response_model=schema.EventResponse)
+def read_event(
+    event_id: int,
+    db: Session = Depends(get_db)
+):
+    """Get event by ID"""
+    return get_event(db, event_id)
+
+@event_router.get("/", response_model=schema.EventList)
+def read_events(
+    skip: int = 0,
+    limit: int = 100,
+    search: Optional[str] = None,
+    category_id: Optional[int] = None,
+    db: Session = Depends(get_db)
+):
+    """Get list of events with optional filtering"""
+    query = db.query(model.Event)
+    
+    if search:
+        search_term = f"%{search}%"
+        query = query.filter(
+            model.Event.title.ilike(search_term) | 
+            model.Event.description.ilike(search_term)
+        )
+    
+    if category_id:
+        query = query.filter(model.Event.category_id == category_id)
+    
+    total = query.count()
+    events = query.offset(skip).limit(limit).all()
+    
+    return {"items": events, "total": total}
+
+# Category routes
+@category_router.post("/", response_model=schema.CategoryResponse)
 def create_category(category: schema.CategoryCreate, db: Session = Depends(get_db)):
-    # Check if category with same name exists
-    existing_category = db.query(model.Category).filter(model.Category.name == category.name).first()
-    if existing_category:
-        return existing_category  # Return the existing category instead of creating a duplicate
+    """Create a new category"""
+    db_category = model.Category(
+        name=category.name,
+        description=category.description
+    )
     
-    db_category = model.Category(**category.dict())
     db.add(db_category)
     db.commit()
     db.refresh(db_category)
     return db_category
 
 @category_router.get("/", response_model=List[schema.CategoryResponse])
-def read_categories(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
-    categories = db.query(model.Category).offset(skip).limit(limit).all()
-    return categories
+def read_categories(db: Session = Depends(get_db)):
+    """Get all categories"""
+    return db.query(model.Category).all()
 
-@category_router.get("/{category_id}", response_model=schema.CategoryResponse)
-def read_category(category_id: int, db: Session = Depends(get_db)):
-    db_category = db.query(model.Category).filter(model.Category.id == category_id).first()
-    if db_category is None:
-        raise HTTPException(status_code=404, detail="Category not found")
+@category_router.put("/{category_id}", response_model=schema.CategoryResponse)
+def update_category(
+    category_id: int,
+    category: schema.CategoryCreate,
+    db: Session = Depends(get_db)
+):
+    """Update a category"""
+    db_category = get_category(db, category_id)
+    
+    # Update fields
+    update_data = category.dict()
+    for key, value in update_data.items():
+        setattr(db_category, key, value)
+    
+    db.commit()
+    db.refresh(db_category)
     return db_category
 
-# Tag endpoints
-@tag_router.post("/", response_model=schema.TagResponse, status_code=status.HTTP_201_CREATED)
-def create_tag(tag: schema.TagCreate, db: Session = Depends(get_db)):
-    # Check if tag with same name exists
-    existing_tag = db.query(model.Tag).filter(model.Tag.name == tag.name).first()
-    if existing_tag:
-        return existing_tag  # Return the existing tag instead of creating a duplicate
-    
-    db_tag = model.Tag(**tag.dict())
-    db.add(db_tag)
-    db.commit()
-    db.refresh(db_tag)
-    return db_tag
-
-@tag_router.get("/", response_model=List[schema.TagResponse])
-def read_tags(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
-    tags = db.query(model.Tag).offset(skip).limit(limit).all()
-    return tags
-
-@tag_router.get("/{tag_id}", response_model=schema.TagResponse)
-def read_tag(tag_id: int, db: Session = Depends(get_db)):
-    db_tag = db.query(model.Tag).filter(model.Tag.id == tag_id).first()
-    if db_tag is None:
-        raise HTTPException(status_code=404, detail="Tag not found")
-    return db_tag
-
-# News endpoints
-# Modify create_news function for better handling of missing data
-@news_router.post("/", response_model=schema.NewsResponse, status_code=status.HTTP_201_CREATED)
-def create_news(news: schema.NewsCreate, db: Session = Depends(get_db)):
-    # Generate slug if not provided
-    if not news.slug:
-        news.slug = generate_slug(news.title, db, model.News)
-    
-    # Set publish date if not provided
-    if not news.publish_date:
-        news.publish_date = datetime.datetime.now()
-    
-    # Extract tags and related items for later processing
-    tag_ids = news.tag_ids if news.tag_ids is not None else []
-    related_news_ids = news.related_news_ids if news.related_news_ids is not None else []
-    related_event_ids = news.related_event_ids if news.related_event_ids is not None else []
-    
-    # Remove relationship fields from the dict
-    news_data = news.dict(exclude={"tag_ids", "related_news_ids", "related_event_ids"})
-    
-    # Validate category_id if provided
-    if news_data.get("category_id"):
-        category = db.query(model.Category).filter(model.Category.id == news_data["category_id"]).first()
-        if not category:
-            # If category doesn't exist, set to None to avoid FK constraint error
-            news_data["category_id"] = None
-    
-    # Validate featured_image_id if provided
-    if news_data.get("featured_image_id"):
-        from storage.model import StoredFile
-        stored_file = db.query(StoredFile).filter(StoredFile.id == news_data["featured_image_id"]).first()
-        if not stored_file:
-            # If file doesn't exist, set to None to avoid FK constraint error
-            news_data["featured_image_id"] = None
-    
-    # Create news item
-    db_news = model.News(**news_data)
-    db.add(db_news)
-    db.commit()
-    db.refresh(db_news)
-    
-    # Add tags - only if we have tag IDs and they're valid
-    if tag_ids:
-        tags = db.query(model.Tag).filter(model.Tag.id.in_(tag_ids)).all()
-        if tags:  # Only assign if we found valid tags
-            db_news.tags = tags
-    
-    # Add related news - only proceed if we have IDs and they exist
-    if related_news_ids:
-        related_news = db.query(model.News).filter(model.News.id.in_(related_news_ids)).all()
-        if related_news:  # Only assign if we found valid related news
-            db_news.related_news = related_news
-    
-    # Add related events - only proceed if we have IDs and they exist
-    if related_event_ids:
-        related_events = db.query(model.Event).filter(model.Event.id.in_(related_event_ids)).all()
-        if related_events:  # Only assign if we found valid related events
-            db_news.related_events = related_events
-    
-    db.commit()
-    db.refresh(db_news)
-    return db_news
-
-@news_router.get("/", response_model=schema.NewsListResponse)
-def read_news(
-    params: schema.ContentPaginationParams = Depends(),
-    db: Session = Depends(get_db)
-):
-    query = db.query(model.News)
-    
-    # Apply filters
-    if params.search:
-        search = f"%{params.search}%"
-        query = query.filter(or_(
-            model.News.title.ilike(search),
-            model.News.content.ilike(search),
-            model.News.summary.ilike(search)
-        ))
-    
-    if params.category_id:
-        query = query.filter(model.News.category_id == params.category_id)
-    
-    if params.tag_ids:
-        query = query.join(model.News.tags).filter(model.Tag.id.in_(params.tag_ids)).group_by(model.News.id)
-    
-    if params.start_date:
-        query = query.filter(func.date(model.News.publish_date) >= params.start_date)
-    
-    if params.end_date:
-        query = query.filter(func.date(model.News.publish_date) <= params.end_date)
-    
-    if params.is_published is not None:
-        query = query.filter(model.News.is_published == params.is_published)
-    
-    # Count total before pagination
-    total = query.count()
-    
-    # Apply pagination and eager loading
-    items = query.order_by(desc(model.News.publish_date))\
-        .options(
-            joinedload(model.News.category),
-            joinedload(model.News.tags),
-            joinedload(model.News.featured_image)
-        )\
-        .offset(params.skip)\
-        .limit(params.limit)\
-        .all()
-    
-    return {"items": items, "total": total}
-
-@news_router.get("/{slug}", response_model=schema.NewsDetailResponse)
-def read_news_by_slug(slug: str, db: Session = Depends(get_db)):
-    db_news = db.query(model.News)\
-        .filter(model.News.slug == slug)\
-        .options(
-            joinedload(model.News.category),
-            joinedload(model.News.tags),
-            joinedload(model.News.featured_image),
-            joinedload(model.News.comments).filter(model.Comment.is_approved == True),
-            joinedload(model.News.related_news),
-            joinedload(model.News.related_events)
-        )\
-        .first()
-    
-    if db_news is None:
-        raise HTTPException(status_code=404, detail="News article not found")
-    
-    # Increment view count
-    db_news.view_count += 1
-    db.commit()
-    
-    return db_news
-
-@news_router.patch("/{news_id}", response_model=schema.NewsResponse)
-def update_news(news_id: int, news: schema.NewsUpdate, db: Session = Depends(get_db)):
-    db_news = db.query(model.News).filter(model.News.id == news_id).first()
-    if db_news is None:
-        raise HTTPException(status_code=404, detail="News article not found")
-    
-    # Update slug if title is changed
-    if news.title and news.title != db_news.title:
-        if not news.slug:  # Only auto-generate slug if not explicitly provided
-            news.slug = generate_slug(news.title, db, model.News, news_id)
-    
-    # Extract relationship fields
-    tag_ids = news.tag_ids
-    related_news_ids = news.related_news_ids
-    related_event_ids = news.related_event_ids
-    
-    # Update fields
-    update_data = news.dict(exclude_unset=True, exclude={"tag_ids", "related_news_ids", "related_event_ids"})
-    
-    # Validate category_id if it's being updated
-    if "category_id" in update_data and update_data["category_id"] is not None:
-        category = db.query(model.Category).filter(model.Category.id == update_data["category_id"]).first()
-        if not category:
-            # If category doesn't exist, set to None
-            update_data["category_id"] = None
-    
-    # Validate featured_image_id if it's being updated
-    if "featured_image_id" in update_data and update_data["featured_image_id"] is not None:
-        from storage.model import StoredFile
-        stored_file = db.query(StoredFile).filter(StoredFile.id == update_data["featured_image_id"]).first()
-        if not stored_file:
-            # If file doesn't exist, set to None to avoid FK constraint error
-            update_data["featured_image_id"] = None
-    
-    for key, value in update_data.items():
-        setattr(db_news, key, value)
-    
-    # Update tags if provided
-    if tag_ids is not None:
-        tags = db.query(model.Tag).filter(model.Tag.id.in_(tag_ids)).all()
-        db_news.tags = tags
-    
-    # Update related news if provided
-    if related_news_ids is not None:
-        related_news = db.query(model.News).filter(model.News.id.in_(related_news_ids)).all()
-        db_news.related_news = related_news
-    
-    # Update related events if provided
-    if related_event_ids is not None:
-        related_events = db.query(model.Event).filter(model.Event.id.in_(related_event_ids)).all()
-        db_news.related_events = related_events
-    
-    db.commit()
-    db.refresh(db_news)
-    return db_news
-
-@news_router.delete("/{news_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_news(news_id: int, db: Session = Depends(get_db)):
-    db_news = db.query(model.News).filter(model.News.id == news_id).first()
-    if db_news is None:
-        raise HTTPException(status_code=404, detail="News article not found")
-    db.delete(db_news)
-    db.commit()
-    return None
-
-# Event endpoints
-@event_router.post("/", response_model=schema.EventResponse)
-def create_event(
-    event: schema.EventCreate = Body(...),
-    db: Session = Depends(get_db)
-):
-    """Create a new event"""
-    try:
-        return crud.create_event(db, event)
-    except HTTPException as e:
-        # Re-raise HTTP exceptions with their original status code and detail
-        raise
-    except IntegrityError as e:
-        # Handle database integrity errors (like foreign key violations)
-        db.rollback()
-        detail = str(e.orig)
-        if "violates foreign key constraint" in detail:
-            if "featured_image_id" in detail:
-                raise HTTPException(
-                    status_code=400, 
-                    detail="The specified featured image ID does not exist"
-                )
-        # Generic database error fallback
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
-
-@event_router.get("/", response_model=List[schema.EventResponse])
-def read_events(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
-    events = db.query(model.Event).offset(skip).limit(limit).all()
-    return events
-
-@event_router.get("/{event_id}", response_model=schema.EventResponse)
-def read_event(event_id: int, db: Session = Depends(get_db)):
-    db_event = db.query(model.Event).filter(model.Event.id == event_id).first()
-    if db_event is None:
-        raise HTTPException(status_code=404, detail="Event not found")
-    return db_event
-
-@event_router.patch("/{event_id}", response_model=schema.EventResponse)
-def update_event(event_id: int, event: schema.EventUpdate, db: Session = Depends(get_db)):
-    db_event = db.query(model.Event).filter(model.Event.id == event_id).first()
-    if db_event is None:
-        raise HTTPException(status_code=404, detail="Event not found")
-    
-    # Update slug if title is changed
-    if event.title and event.title != db_event.title:
-        if not event.slug:  # Only auto-generate slug if not explicitly provided
-            event.slug = generate_slug(event.title, db, model.Event, event_id)
-    
-    # Extract relationship fields
-    tag_ids = event.tag_ids
-    related_news_ids = event.related_news_ids
-    related_event_ids = event.related_event_ids
-    
-    # Update fields
-    update_data = event.dict(exclude_unset=True, exclude={"tag_ids", "related_news_ids", "related_event_ids"})
-    
-    # Validate category_id if it's being updated
-    if "category_id" in update_data and update_data["category_id"] is not None:
-        category = db.query(model.Category).filter(model.Category.id == update_data["category_id"]).first()
-        if not category:
-            # If category doesn't exist, set to None
-            update_data["category_id"] = None
-    
-    # Validate featured_image_id if it's being updated
-    if "featured_image_id" in update_data and update_data["featured_image_id"] is not None:
-        from storage.model import StoredFile
-        stored_file = db.query(StoredFile).filter(StoredFile.id == update_data["featured_image_id"]).first()
-        if not stored_file:
-            # If file doesn't exist, set to None to avoid FK constraint error
-            update_data["featured_image_id"] = None
-    
-    for key, value in update_data.items():
-        setattr(db_event, key, value)
-    
-    # Update tags if provided
-    if tag_ids is not None:
-        tags = db.query(model.Tag).filter(model.Tag.id.in_(tag_ids)).all()
-        db_event.tags = tags
-    
-    # Update related news if provided
-    if related_news_ids is not None:
-        related_news = db.query(model.News).filter(model.News.id.in_(related_news_ids)).all()
-        db_event.related_news = related_news
-    
-    # Update related events if provided
-    if related_event_ids is not None:
-        related_events = db.query(model.Event).filter(model.Event.id.in_(related_event_ids)).all()
-        db_event.related_events = related_events
-    
-    db.commit()
-    db.refresh(db_event)
-    return db_event
-
-@event_router.delete("/{event_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_event(event_id: int, db: Session = Depends(get_db)):
-    db_event = db.query(model.Event).filter(model.Event.id == event_id).first()
-    if db_event is None:
-        raise HTTPException(status_code=404, detail="Event not found")
-    db.delete(db_event)
-    db.commit()
-    return None
+# Similar endpoints for tags and comments can be added
+# ...

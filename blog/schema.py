@@ -76,10 +76,31 @@ class BlogResponse(BlogBase):
     category: Optional[BlogCategoryResponse] = None
     featured_image: Optional[Dict[str, Any]] = None
     og_image: Optional[Dict[str, Any]] = None
-    tags: List[TagResponse] = []
     
     class Config:
-        from_attributes = True  # Updated from orm_mode=True
+        from_attributes = True
+    
+    @validator('featured_image', 'og_image', pre=True)
+    def validate_image(cls, v):
+        """Convert StoredFile object to dict if needed"""
+        if v is None:
+            return None
+        
+        # If already a dict, return as is
+        if isinstance(v, dict):
+            return v
+            
+        # If ORM object with id and public_url, convert to dict
+        if hasattr(v, 'id') and hasattr(v, 'public_url'):
+            return {
+                "id": v.id,
+                "public_url": v.public_url,
+                "filename": getattr(v, 'filename', ''),
+                # Add other fields as needed
+                "content_type": getattr(v, 'content_type', '')
+            }
+            
+        return None
 
 class BlogDetailResponse(BlogResponse):
     comments: List[CommentResponse] = []

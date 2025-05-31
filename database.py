@@ -1,32 +1,36 @@
 from sqlalchemy import create_engine
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
-from config import DATABASE_URL
+import os
+from dotenv import load_dotenv
+import logging
 
-print("Database URL is", DATABASE_URL)
+# Ensure environment variables are loaded
+load_dotenv()
 
-# Configure engine based on database type
-if DATABASE_URL.startswith('sqlite'):
-    # SQLite specific configurations
-    engine = create_engine(
-        DATABASE_URL, 
-        connect_args={"check_same_thread": False},
-        echo=True  # Set to False in production
-    )
-else:
-    # PostgreSQL or other database engine
-    engine = create_engine(
-        DATABASE_URL,
-        echo=True  # Set to False in production
-    )
+# Configure logging
+logger = logging.getLogger(__name__)
 
-# Create session factory
+# Get database connection parameters from environment variables
+POSTGRES_USER = os.getenv("POSTGRES_USER", "postgres")
+POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD", "postgres")
+POSTGRES_SERVER = os.getenv("POSTGRES_SERVER", "database")
+POSTGRES_PORT = os.getenv("POSTGRES_PORT", "5432")
+POSTGRES_DB = os.getenv("POSTGRES_DB", "website_db")
+
+# Construct database URL
+DATABASE_URL = f"postgresql://{POSTGRES_USER}:{POSTGRES_PASSWORD}@{POSTGRES_SERVER}:{POSTGRES_PORT}/{POSTGRES_DB}"
+
+# Log the database URL (with password masked for security)
+masked_url = f"postgresql://{POSTGRES_USER}:****@{POSTGRES_SERVER}:{POSTGRES_PORT}/{POSTGRES_DB}"
+logger.info(f"Database URL is {masked_url}")
+
+# Create SQLAlchemy engine and session
+engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-
-# Create base class for models
 Base = declarative_base()
 
-# Dependency to get DB session
+# Function to get a database session
 def get_db():
     db = SessionLocal()
     try:
@@ -34,6 +38,11 @@ def get_db():
     finally:
         db.close()
 
-# Create all tables in the database
+# Function to create tables
 def create_tables():
-    Base.metadata.create_all(bind=engine)
+    try:
+        Base.metadata.create_all(bind=engine)
+        logger.info("Database tables created successfully")
+    except Exception as e:
+        logger.error(f"Error creating database tables: {str(e)}")
+        raise
