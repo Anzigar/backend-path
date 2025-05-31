@@ -191,3 +191,23 @@ def get_available_images(
         "files": files,
         "count": total_count
     }
+
+@router.get("/featured-images", response_model=List[schema.FileUploadResponse])
+def get_featured_images(
+    db: Session = Depends(get_db),
+    skip: int = 0,
+    limit: int = 20
+):
+    """Get a list of images that can be used as featured images for blogs, news, events, etc."""
+    
+    # Query for image files
+    query = db.query(model.StoredFile).filter(
+        model.StoredFile.content_type.in_([
+            "image/jpeg", "image/jpg", "image/png", "image/webp", "image/gif"
+        ])
+    )
+    
+    # Order by ID for easier reference
+    images = query.order_by(model.StoredFile.id).offset(skip).limit(limit).all()
+    
+    return images

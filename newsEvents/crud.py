@@ -29,18 +29,30 @@ def create_event(db: Session, event: schema.EventCreate) -> model.Event:
         from storage.model import StoredFile
         
         # Check if featured_image_id exists
-        image_exists = db.query(StoredFile).filter(StoredFile.id == event.featured_image_id).first() is not None
-        if not image_exists:
-            # Get maximum ID to help with troubleshooting
-            max_id_result = db.query(func.max(StoredFile.id)).first()
-            max_id = max_id_result[0] if max_id_result and max_id_result[0] else 0
+        image = db.query(StoredFile).filter(StoredFile.id == event.featured_image_id).first()
+        if not image:
+            # Get list of available images to help the user
+            available_images = db.query(
+                StoredFile.id, 
+                StoredFile.filename, 
+                StoredFile.file_type
+            ).order_by(StoredFile.id).limit(10).all()
+            
+            # Format available images list
+            image_list = []
+            for img in available_images:
+                image_list.append(f"ID: {img.id} - {img.filename} ({img.file_type})")
+            
+            # Get the highest ID
+            max_id = db.query(func.max(StoredFile.id)).scalar() or 0
             
             raise HTTPException(
                 status_code=400, 
                 detail=(
                     f"Featured image with ID {event.featured_image_id} not found in stored files. "
                     f"The highest available image ID is {max_id}. "
-                    "Please upload the image first or use an existing image ID."
+                    "Please upload the image first or use an existing image ID.\n\n"
+                    "Available images (first 10):\n" + "\n".join(image_list)
                 )
             )
     
