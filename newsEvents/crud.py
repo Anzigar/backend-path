@@ -22,7 +22,32 @@ def create_event(db: Session, event: schema.EventCreate) -> model.Event:
     # Generate slug if not provided
     if not event.slug:
         event.slug = f"{'-'.join(event.title.lower().split()[:5])}-{uuid.uuid4().hex[:8]}"
-        
+    
+    # Validate category_id exists if provided
+    if event.category_id:
+        category = db.query(model.Category).filter(model.Category.id == event.category_id).first()
+        if not category:
+            # Get list of available categories
+            available_categories = db.query(
+                model.Category.id,
+                model.Category.name,
+                model.Category.content_type
+            ).order_by(model.Category.id).all()
+            
+            # Format available categories list
+            category_list = []
+            for cat in available_categories:
+                category_list.append(f"ID: {cat.id} - {cat.name} ({cat.content_type})")
+            
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Category with ID {event.category_id} not found in database. "
+                    "Please use an existing category ID.\n\n"
+                    "Available categories:\n" + "\n".join(category_list)
+                )
+            )
+    
     # Validate featured_image_id exists in stored_files if provided
     if event.featured_image_id:
         # Import StoredFile model here to avoid circular imports
