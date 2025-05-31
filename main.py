@@ -116,6 +116,15 @@ async def health_check():
 async def startup_event():
     create_tables()
     logger.info("Database tables created")
+    
+    # Initialize sample images for development if needed
+    if DEBUG:
+        try:
+            from storage.sample_data import initialize_sample_images
+            initialize_sample_images()
+            logger.info("Sample images initialized for development")
+        except Exception as e:
+            logger.warning(f"Failed to initialize sample images: {str(e)}")
 
 # Run the application
 if __name__ == "__main__":
